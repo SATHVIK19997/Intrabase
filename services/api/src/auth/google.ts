@@ -31,13 +31,17 @@ interface DbUser {
   role: 'admin' | 'editor' | 'viewer'
 }
 
-// Returns the Google OAuth redirect URL
+// Returns the Google OAuth redirect URL (built manually to avoid app_domain param)
 export function getAuthUrl(): string {
-  return oauth2Client.generateAuthUrl({
+  const params = new URLSearchParams({
+    client_id: env.GOOGLE_CLIENT_ID,
+    redirect_uri: env.GOOGLE_CALLBACK_URL,
+    response_type: 'code',
+    scope: SCOPES.join(' '),
     access_type: 'offline',
-    scope: SCOPES,
     prompt: 'select_account',
   })
+  return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`
 }
 
 // Exchange auth code for user profile
