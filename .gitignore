@@ -1,0 +1,27 @@
+# Environment variables — never commit these
+.env
+.env.local
+.env.production
+services/api/.env
+services/dashboard/.env
+services/dashboard/.env.local
+
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build outputs
+.next/
+dist/
+build/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# SSL certs
+nginx/ssl/
