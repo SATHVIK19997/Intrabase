@@ -25,9 +25,10 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 # Copy built app
-COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
+RUN mkdir -p ./public
+COPY --from=builder /app/public ./public
 
 # Non-root user for security
 RUN addgroup -S intrabase && adduser -S intrabase -G intrabase
