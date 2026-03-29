@@ -11,6 +11,7 @@ const oauth2Client = new OAuth2Client(
 )
 
 const SCOPES = [
+  'openid',
   'https://www.googleapis.com/auth/userinfo.email',
   'https://www.googleapis.com/auth/userinfo.profile',
 ]
@@ -33,6 +34,7 @@ interface DbUser {
 
 // Returns the Google OAuth redirect URL (built manually to avoid app_domain param)
 export function getAuthUrl(): string {
+  const base = 'https://accounts.google.com/o/oauth2/v2/auth'
   const params = new URLSearchParams({
     client_id: env.GOOGLE_CLIENT_ID,
     redirect_uri: env.GOOGLE_CALLBACK_URL,
@@ -40,8 +42,10 @@ export function getAuthUrl(): string {
     scope: SCOPES.join(' '),
     access_type: 'offline',
     prompt: 'select_account',
+    include_granted_scopes: 'true',
   })
-  return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`
+  // Use %20 instead of + for scope separator (required by Google)
+  return `${base}?${params.toString().replace(/\+/g, '%20')}`
 }
 
 // Exchange auth code for user profile
