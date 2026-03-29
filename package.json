@@ -1,0 +1,8 @@
+{
+  "name": "intrabase",
+  "version": "1.0.0",
+  "scripts": {
+    "build": "cd services/api && npm install && npm run build",
+    "start": "cd services/api && npm start"
+  }
+}
