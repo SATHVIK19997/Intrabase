@@ -15,13 +15,23 @@ async function proxy(req: NextRequest, method: string): Promise<NextResponse> {
   const cookieHeader = req.headers.get('cookie')
   if (cookieHeader) headers['cookie'] = cookieHeader
 
-  const fetchOptions: RequestInit = { method, headers }
+  const fetchOptions: RequestInit = { method, headers, redirect: 'manual' }
   if (!['GET', 'HEAD'].includes(method)) {
     const body = await req.text()
     if (body) fetchOptions.body = body
   }
 
   const res = await fetch(target, fetchOptions)
+
+  // Handle redirects manually so we can forward Set-Cookie headers (OAuth flow)
+  if (res.status >= 300 && res.status < 400) {
+    const location = res.headers.get('location') ?? '/'
+    const response = NextResponse.redirect(location, { status: res.status })
+    for (const c of res.headers.getSetCookie?.() ?? []) {
+      response.headers.append('set-cookie', c)
+    }
+    return response
+  }
 
   // Read body as text to preserve as-is
   const responseBody = await res.text()
