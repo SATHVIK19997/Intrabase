@@ -128,6 +128,48 @@ CREATE TRIGGER set_users_updated_at
 -- Call periodically via a scheduled job or pg_cron
 -- =============================================================================
 
+-- =============================================================================
+-- REALTIME NOTIFY TRIGGER FUNCTION
+-- Attach to any user table to broadcast changes via pg_notify
+-- =============================================================================
+
+CREATE OR REPLACE FUNCTION intrabase_system.notify_realtime()
+RETURNS TRIGGER AS $$
+DECLARE
+  project_id  UUID;
+  record_data JSONB;
+  payload     TEXT;
+BEGIN
+  SELECT id INTO project_id
+  FROM intrabase_system.projects
+  WHERE slug = TG_TABLE_SCHEMA
+  LIMIT 1;
+
+  IF TG_OP = 'DELETE' THEN
+    record_data := to_jsonb(OLD);
+  ELSE
+    record_data := to_jsonb(NEW);
+  END IF;
+
+  payload := json_build_object(
+    'projectId', project_id,
+    'schema',    TG_TABLE_SCHEMA,
+    'table',     TG_TABLE_NAME,
+    'op',        TG_OP,
+    'record',    record_data
+  )::TEXT;
+
+  PERFORM pg_notify('intrabase_realtime', payload);
+
+  IF TG_OP = 'DELETE' THEN RETURN OLD; ELSE RETURN NEW; END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+-- =============================================================================
+-- CLEANUP FUNCTION
+-- Remove expired sessions and audit logs older than 90 days
+-- =============================================================================
+
 CREATE OR REPLACE FUNCTION intrabase_system.cleanup_expired()
 RETURNS void AS $$
 BEGIN

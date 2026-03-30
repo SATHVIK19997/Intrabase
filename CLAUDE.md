@@ -13,7 +13,7 @@ This file tracks everything being built, decisions made, and current status for 
 - Auto-generated REST API from schema
 - Web dashboard: table editor, SQL editor, user/role management
 - Row Level Security (RLS) support
-- Realtime via WebSocket + pg_notify (Phase 2)
+- Realtime via WebSocket + pg_notify ✅ Done
 - File storage via MinIO (Phase 2)
 
 ---
@@ -86,11 +86,21 @@ This file tracks everything being built, decisions made, and current status for 
 
 ### Day 3 — Security + Polish + Deploy
 - [ ] RLS policy viewer/editor in dashboard
-- [ ] Rate limiting on API
+- [x] Rate limiting on API (via @fastify/rate-limit)
 - [ ] HTTPS enforced via Nginx
-- [ ] Allowed Gmail domain enforcement
+- [x] Allowed Gmail domain enforcement (ALLOWED_EMAIL_DOMAIN env var)
 - [ ] Final docker-compose test
-- [ ] Internal deployment
+- [x] Deployed to Railway (api + dashboard services)
+
+### Post-Sprint — Features Added (2026-03-30)
+- [x] CSV Import — POST /api/projects/:id/rest/:table/import, bulk insert with error reporting
+- [x] CSV Export — GET /api/projects/:id/rest/:table/export, streams full table as .csv
+- [x] Filter bar — dynamic per-table column filters above the grid (contains, =, ≠, >, ≥, <, ≤, is null)
+- [x] Refresh fix — refresh button now reloads both sidebar table list and active table rows
+- [x] Realtime — WebSocket server at /api/realtime, pg_notify trigger, live INSERT/UPDATE/DELETE in dashboard
+- [x] Realtime — useRealtimeTable hook, Live badge, auto-subscribe on table open
+- [x] Realtime — trigger auto-attached to new tables created via CreateTableModal
+- [x] Neon support — DATABASE_DIRECT_URL auto-derived by stripping -pooler from hostname for LISTEN
 
 ---
 
@@ -141,6 +151,7 @@ intrabase/
         └── src/
             ├── app/           ← Next.js 14 app router pages
             ├── components/    ← Reusable UI components
+            ├── hooks/         ← useRealtimeTable (WebSocket hook)
             └── lib/           ← API client, auth helpers
 ```
 
@@ -148,10 +159,12 @@ intrabase/
 
 ## Known Constraints
 
-- Realtime and Storage are Phase 2 (post 3-day sprint)
+- File storage (MinIO) is Phase 2 — not yet built
 - Google OAuth requires a Google Cloud project with OAuth credentials configured
 - For local dev without a domain, use `localhost` and HTTP (disable HTTPS in nginx.conf)
 - pgBouncer is included but can be bypassed in dev (direct PostgreSQL connection)
+- Realtime trigger must be manually attached to tables created via raw SQL (only auto-attached via CreateTableModal)
+- Neon pooler URL does not support LISTEN — listener auto-derives direct URL by stripping `-pooler` from hostname
 
 ---
 
@@ -162,3 +175,4 @@ intrabase/
 | Day 0 | Project scaffold: folders, CLAUDE.md, README.md, ARCHITECTURE.md, package.json files, docker-compose.yml, .env.example, nginx.conf, postgres init.sql |
 | Day 1 | Full API service implementation: Google OAuth SSO, JWT auth, API keys, REST engine (introspect + queryBuilder + routes), audit middleware, rate limiting |
 | Day 2 | Full dashboard UI: login, table browser, table editor (grid + inline edit), SQL editor (Monaco), users, API keys, audit logs, sidebar, middleware |
+| 2026-03-30 | CSV import/export, dynamic filter bar, refresh fix, Realtime WebSocket (pg_notify + ws server + useRealtimeTable hook + Live badge + auto-trigger on table create) |

@@ -127,6 +127,28 @@ export const projects = {
   tables: (id: string) => apiFetch<{ name: string; column_count: number }[]>(`/projects/${id}/tables`),
 
   // Project-scoped REST
+  restExport: async (projectId: string, table: string): Promise<string> => {
+    const res = await fetch(`${API_BASE}/projects/${projectId}/rest/${table}/export`, {
+      credentials: 'include',
+    })
+    if (res.status === 401) {
+      const refreshed = await fetch(`${API_BASE}/auth/refresh`, { method: 'POST', credentials: 'include' })
+      if (refreshed.ok) {
+        const retry = await fetch(`${API_BASE}/projects/${projectId}/rest/${table}/export`, { credentials: 'include' })
+        if (retry.ok) return retry.text()
+      }
+      if (typeof window !== 'undefined') window.location.href = '/login'
+      throw new Error('Unauthenticated')
+    }
+    if (!res.ok) throw new Error(`Export failed: ${res.statusText}`)
+    return res.text()
+  },
+  restImport: (projectId: string, table: string, csv: string) =>
+    apiFetch<{ inserted: number; total: number; errors: string[] }>(
+      `/projects/${projectId}/rest/${table}/import`,
+      { method: 'POST', body: JSON.stringify({ csv }) }
+    ),
+
   restSelect: (projectId: string, table: string, params: Record<string, string> = {}) => {
     const qs = new URLSearchParams(params).toString()
     return apiFetch<Row[]>(`/projects/${projectId}/rest/${table}${qs ? `?${qs}` : ''}`)

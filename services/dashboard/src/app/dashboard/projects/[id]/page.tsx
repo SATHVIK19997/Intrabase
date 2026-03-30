@@ -1,9 +1,11 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
+import { Upload, Download } from 'lucide-react'
 import { projects as projectsApi, sql as sqlApi } from '@/lib/api'
+import { useRealtimeTable, type RealtimeEvent } from '@/hooks/useRealtimeTable'
 import { TableGrid } from '@/components/TableGrid'
 import { SqlEditor } from '@/components/SqlEditor'
 import { CreateTableModal } from '@/components/CreateTableModal'
@@ -16,10 +18,12 @@ function ProjectTableEditor({
   projectId,
   table,
   onClose,
+  refreshKey,
 }: {
   projectId: string
   table: string
   onClose: () => void
+  refreshKey?: number
 }) {
   const [columns, setColumns] = useState<ColumnInfo[]>([])
   const [rows, setRows] = useState<Row[]>([])
@@ -27,6 +31,11 @@ function ProjectTableEditor({
   const [offset, setOffset] = useState(0)
   const [hasMore, setHasMore] = useState(false)
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null)
+  const [importing, setImporting] = useState(false)
+  const [filters, setFilters] = useState<{ column: string; operator: string; value: string }[]>([])
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const filtersRef = useRef(filters)
+  filtersRef.current = filters
 
   const showToast = (msg: string, type: 'success' | 'error' = 'success') => {
     setToast({ msg, type })
@@ -36,9 +45,15 @@ function ProjectTableEditor({
   const fetchRows = useCallback(async (off = 0) => {
     setLoading(true)
     try {
-      const data = await projectsApi.restSelect(projectId, table, {
-        limit: String(PAGE_SIZE), offset: String(off),
-      })
+      const params: Record<string, string> = { limit: String(PAGE_SIZE), offset: String(off) }
+      for (const f of filtersRef.current) {
+        if (f.column && f.value.trim()) {
+          params[f.column] = f.operator === 'ilike'
+            ? `ilike.%${f.value}%`
+            : `${f.operator}.${f.value}`
+        }
+      }
+      const data = await projectsApi.restSelect(projectId, table, params)
       setRows(data)
       setHasMore(data.length === PAGE_SIZE)
     } catch (e: unknown) {
@@ -47,6 +62,30 @@ function ProjectTableEditor({
       setLoading(false)
     }
   }, [projectId, table])
+
+  const addFilter = () => {
+    setFilters(prev => [...prev, { column: '', operator: 'ilike', value: '' }])
+  }
+  const removeFilter = (i: number) => {
+    setFilters(prev => { const next = prev.filter((_, idx) => idx !== i); filtersRef.current = next; fetchRows(0); setOffset(0); return next })
+  }
+  const updateFilter = (i: number, key: 'column' | 'operator' | 'value', val: string) => {
+    setFilters(prev => prev.map((f, idx) => idx === i ? { ...f, [key]: val } : f))
+  }
+  const applyFilters = () => { setOffset(0); fetchRows(0) }
+
+  const handleRealtimeEvent = useCallback((event: RealtimeEvent) => {
+    const pkCol = columns.find(c => c.isPrimaryKey)?.name
+    if (event.op === 'INSERT') {
+      setRows(prev => offset === 0 ? [event.record, ...prev].slice(0, PAGE_SIZE) : prev)
+    } else if (event.op === 'UPDATE' && pkCol) {
+      setRows(prev => prev.map(r => r[pkCol] === event.record[pkCol] ? { ...r, ...event.record } : r))
+    } else if (event.op === 'DELETE' && pkCol) {
+      setRows(prev => prev.filter(r => r[pkCol] !== event.record[pkCol]))
+    }
+  }, [columns, offset])
+
+  const { connected: liveConnected } = useRealtimeTable(projectId, table, handleRealtimeEvent)
 
   useEffect(() => {
     // Get columns via SQL introspection
@@ -79,11 +118,61 @@ function ProjectTableEditor({
     fetchRows(0)
   }, [projectId, table, fetchRows])
 
+  useEffect(() => {
+    if (refreshKey) { setOffset(0); fetchRows(0) }
+  }, [refreshKey])
+
   const handlePrev = () => { const o = Math.max(0, offset - PAGE_SIZE); setOffset(o); fetchRows(o) }
   const handleNext = () => { const o = offset + PAGE_SIZE; setOffset(o); fetchRows(o) }
 
+  const handleExport = async () => {
+    try {
+      const csv = await projectsApi.restExport(projectId, table)
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${table}.csv`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e: unknown) {
+      showToast(e instanceof Error ? e.message : 'Export failed', 'error')
+    }
+  }
+
+  const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    e.target.value = ''
+    setImporting(true)
+    try {
+      const csv = await file.text()
+      const result = await projectsApi.restImport(projectId, table, csv)
+      if (result.errors.length > 0) {
+        showToast(`Imported ${result.inserted}/${result.total} rows. ${result.errors.length} errors.`, 'error')
+      } else {
+        showToast(`Imported ${result.inserted} rows successfully`)
+      }
+      fetchRows(0)
+      setOffset(0)
+    } catch (e: unknown) {
+      showToast(e instanceof Error ? e.message : 'Import failed', 'error')
+    } finally {
+      setImporting(false)
+    }
+  }
+
   return (
     <div className="flex flex-col h-full">
+      {/* Hidden file input for CSV import */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".csv,text/csv"
+        className="hidden"
+        onChange={handleImportFile}
+      />
+
       {/* Header */}
       <div className="flex items-center gap-3 px-4 py-2 border-b border-border bg-surface/50 flex-shrink-0">
         <button onClick={onClose} className="text-gray-500 hover:text-white transition-colors">
@@ -92,8 +181,33 @@ function ProjectTableEditor({
           </svg>
         </button>
         <span className="text-sm font-mono font-medium text-white">{table}</span>
+        {liveConnected && (
+          <span className="flex items-center gap-1 text-xs text-green-400 bg-green-400/10 border border-green-400/20 rounded-full px-2 py-0.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+            Live
+          </span>
+        )}
         <div className="flex-1" />
-        <div className="flex items-center gap-2 text-xs text-gray-500">
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={importing}
+            className="btn-ghost text-xs py-1 px-2 flex items-center gap-1.5"
+            title="Import CSV"
+          >
+            <Download className="w-3.5 h-3.5" />
+            {importing ? 'Importing...' : 'Import'}
+          </button>
+          <button
+            onClick={handleExport}
+            className="btn-ghost text-xs py-1 px-2 flex items-center gap-1.5"
+            title="Export CSV"
+          >
+            <Upload className="w-3.5 h-3.5" />
+            Export
+          </button>
+        </div>
+        <div className="flex items-center gap-2 text-xs text-gray-500 border-l border-border pl-2">
           <button onClick={handlePrev} disabled={offset === 0} className="btn-ghost py-1 px-2 disabled:opacity-30">← Prev</button>
           <span>{offset + 1}–{offset + rows.length}</span>
           <button onClick={handleNext} disabled={!hasMore} className="btn-ghost py-1 px-2 disabled:opacity-30">Next →</button>
@@ -104,6 +218,74 @@ function ProjectTableEditor({
         <div className={`absolute top-16 right-4 z-50 px-4 py-2 rounded-md text-sm font-medium shadow-lg ${
           toast.type === 'success' ? 'bg-accent text-black' : 'bg-danger text-white'
         }`}>{toast.msg}</div>
+      )}
+
+      {/* Filter bar */}
+      {columns.length > 0 && (
+        <div className="flex-shrink-0 px-4 py-2 border-b border-border bg-background/50 flex flex-wrap items-center gap-2">
+          {filters.map((f, i) => (
+            <div key={i} className="flex items-center gap-1 bg-surface border border-border rounded-md px-2 py-1">
+              <select
+                value={f.column}
+                onChange={e => updateFilter(i, 'column', e.target.value)}
+                className="bg-transparent text-xs text-white outline-none cursor-pointer"
+              >
+                <option value="" disabled className="bg-white text-black">column</option>
+                {columns.map(c => <option key={c.name} value={c.name} className="bg-white text-black">{c.name}</option>)}
+              </select>
+              <select
+                value={f.operator}
+                onChange={e => updateFilter(i, 'operator', e.target.value)}
+                className="bg-transparent text-xs text-gray-400 outline-none cursor-pointer"
+              >
+                <option value="ilike" className="bg-white text-black">contains</option>
+                <option value="eq" className="bg-white text-black">=</option>
+                <option value="neq" className="bg-white text-black">≠</option>
+                <option value="gt" className="bg-white text-black">&gt;</option>
+                <option value="gte" className="bg-white text-black">≥</option>
+                <option value="lt" className="bg-white text-black">&lt;</option>
+                <option value="lte" className="bg-white text-black">≤</option>
+                <option value="is" className="bg-white text-black">is null</option>
+              </select>
+              {f.operator !== 'is' && (
+                <input
+                  value={f.value}
+                  onChange={e => updateFilter(i, 'value', e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && applyFilters()}
+                  placeholder="value"
+                  className="bg-transparent text-xs text-white outline-none w-24 placeholder-gray-600"
+                />
+              )}
+              <button onClick={() => removeFilter(i)} className="text-gray-600 hover:text-danger ml-1 transition-colors">
+                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          ))}
+          <button
+            onClick={addFilter}
+            className="text-xs text-gray-500 hover:text-white flex items-center gap-1 transition-colors"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.5v15m7.5-7.5h-15" />
+            </svg>
+            Add filter
+          </button>
+          {filters.some(f => f.column && (f.value.trim() || f.operator === 'is')) && (
+            <button onClick={applyFilters} className="btn-primary text-xs py-1 px-3 ml-1">
+              Apply
+            </button>
+          )}
+          {filters.length > 0 && (
+            <button
+              onClick={() => { setFilters([]); filtersRef.current = []; fetchRows(0); setOffset(0) }}
+              className="text-xs text-gray-600 hover:text-white transition-colors"
+            >
+              Clear all
+            </button>
+          )}
+        </div>
       )}
 
       <div className="flex-1 overflow-hidden">
@@ -153,6 +335,7 @@ export default function ProjectDetailPage() {
   const [editingProject, setEditingProject] = useState(false)
   const [editName, setEditName] = useState('')
   const [editDesc, setEditDesc] = useState('')
+  const [tableRefreshKey, setTableRefreshKey] = useState(0)
 
   useEffect(() => {
     projectsApi.get(projectId)
@@ -173,6 +356,7 @@ export default function ProjectDetailPage() {
 
   const refreshTables = () => {
     projectsApi.get(projectId).then(setProject).catch(console.error)
+    setTableRefreshKey(k => k + 1)
   }
 
   const saveEdit = async () => {
@@ -331,6 +515,7 @@ export default function ProjectDetailPage() {
                   projectId={projectId}
                   table={selectedTable}
                   onClose={() => setSelectedTable(null)}
+                  refreshKey={tableRefreshKey}
                 />
               ) : (
                 <div className="flex items-center justify-center h-full text-center px-8">

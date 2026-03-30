@@ -314,6 +314,121 @@ export async function registerProjectRoutes(fastify: FastifyInstance): Promise<v
     }
   )
 
+  // ── CSV helpers ───────────────────────────────────────────────────────────────
+
+  function parseCSVRow(line: string): string[] {
+    const result: string[] = []
+    let current = ''
+    let inQuotes = false
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i]
+      if (char === '"') {
+        if (inQuotes && line[i + 1] === '"') { current += '"'; i++ }
+        else inQuotes = !inQuotes
+      } else if (char === ',' && !inQuotes) {
+        result.push(current); current = ''
+      } else {
+        current += char
+      }
+    }
+    result.push(current)
+    return result
+  }
+
+  function toCSVValue(val: unknown): string {
+    if (val == null) return ''
+    const str = String(val)
+    if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
+      return `"${str.replace(/"/g, '""')}"`
+    }
+    return str
+  }
+
+  // GET /api/projects/:id/rest/:table/export — download table as CSV
+  fastify.get<{ Params: { id: string; table: string } }>(
+    '/api/projects/:id/rest/:table/export',
+    { preHandler: [requireAuth] },
+    async (req, reply) => {
+      const schema = await getProjectSchema(req.params.id)
+      if (!schema) return reply.status(404).send({ error: 'Project not found' })
+      const columns = await getProjectColumns(schema, req.params.table)
+      if (!columns.length) return reply.status(404).send({ error: `Table "${req.params.table}" not found` })
+
+      const rows = await query(`SELECT * FROM "${schema}"."${req.params.table}"`)
+      const headers = columns.map(c => c.name)
+      const csvLines = [
+        headers.join(','),
+        ...rows.map(row => headers.map(h => toCSVValue(row[h])).join(',')),
+      ]
+
+      return reply
+        .header('Content-Type', 'text/csv; charset=utf-8')
+        .header('Content-Disposition', `attachment; filename="${req.params.table}.csv"`)
+        .send(csvLines.join('\n'))
+    }
+  )
+
+  // POST /api/projects/:id/rest/:table/import — upload CSV and bulk insert
+  fastify.post<{ Params: { id: string; table: string }; Body: { csv: string } }>(
+    '/api/projects/:id/rest/:table/import',
+    { preHandler: [requireAuth, requireEditor] },
+    async (req, reply) => {
+      const schema = await getProjectSchema(req.params.id)
+      if (!schema) return reply.status(404).send({ error: 'Project not found' })
+      const columns = await getProjectColumns(schema, req.params.table)
+      if (!columns.length) return reply.status(404).send({ error: `Table "${req.params.table}" not found` })
+
+      const { csv } = req.body
+      if (!csv?.trim()) return reply.status(400).send({ error: 'csv is required' })
+
+      const lines = csv.split(/\r?\n/).filter(l => l.trim())
+      if (lines.length < 2) return reply.status(400).send({ error: 'CSV must have a header row and at least one data row' })
+
+      const headers = parseCSVRow(lines[0])
+      const columnNames = columns.map(c => c.name)
+      const invalidHeaders = headers.filter(h => !columnNames.includes(h))
+      if (invalidHeaders.length) {
+        return reply.status(400).send({ error: `Unknown columns: ${invalidHeaders.join(', ')}` })
+      }
+
+      // Skip auto-generated columns (PK with default)
+      const insertableHeaders = headers.filter(h => {
+        const col = columns.find(c => c.name === h)
+        return col && !(col.isPrimaryKey && col.columnDefault)
+      })
+
+      let inserted = 0
+      const errors: string[] = []
+
+      for (let i = 1; i < lines.length; i++) {
+        const values = parseCSVRow(lines[i])
+        if (values.length !== headers.length) {
+          errors.push(`Row ${i}: expected ${headers.length} columns, got ${values.length}`)
+          continue
+        }
+        const rowData: Record<string, unknown> = {}
+        for (const col of insertableHeaders) {
+          const idx = headers.indexOf(col)
+          rowData[col] = values[idx] === '' ? null : values[idx]
+        }
+        try {
+          const cols = Object.keys(rowData)
+          const vals = Object.values(rowData)
+          const placeholders = vals.map((_, j) => `$${j + 1}`)
+          await query(
+            `INSERT INTO "${schema}"."${req.params.table}" (${cols.map(c => `"${c}"`).join(', ')}) VALUES (${placeholders.join(', ')})`,
+            vals
+          )
+          inserted++
+        } catch (err) {
+          errors.push(`Row ${i}: ${err instanceof Error ? err.message : 'Insert failed'}`)
+        }
+      }
+
+      return reply.send({ inserted, total: lines.length - 1, errors })
+    }
+  )
+
   // GET /api/projects/:id/tables — table list for a project
   fastify.get<{ Params: { id: string } }>(
     '/api/projects/:id/tables',

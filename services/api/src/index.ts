@@ -13,6 +13,8 @@ import { registerRestRoutes } from './rest/routes'
 import { registerProjectRoutes } from './rest/projects'
 import { registerAuditHook } from './middleware/audit'
 import { introspectSchema } from './rest/introspect'
+import { attachWebSocketServer } from './realtime/wsServer'
+import { startListener } from './realtime/listener'
 
 async function buildServer() {
   const fastify = Fastify({
@@ -119,6 +121,10 @@ async function start() {
     // Start listening
     await fastify.listen({ port: env.API_PORT, host: '0.0.0.0' })
     fastify.log.info(`🚀 IntraBase API running on port ${env.API_PORT}`)
+
+    // Attach WebSocket server and start pg LISTEN loop
+    attachWebSocketServer(fastify.server)
+    startListener().catch((err) => fastify.log.warn('Realtime listener failed to start:', err))
   } catch (err) {
     fastify.log.error(err)
     process.exit(1)

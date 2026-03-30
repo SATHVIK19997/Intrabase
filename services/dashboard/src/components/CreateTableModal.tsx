@@ -306,6 +306,16 @@ export function CreateTableModal({ schema, onClose, onCreated, runSql }: CreateT
     setError('')
     try {
       await runSql(buildCreateTableSQL(schema, name, validCols))
+      // Attach realtime trigger so live updates work immediately
+      await runSql(`
+        DROP TRIGGER IF EXISTS "notify_realtime_${name}" ON "${schema}"."${name}";
+        CREATE TRIGGER "notify_realtime_${name}"
+        AFTER INSERT OR UPDATE OR DELETE ON "${schema}"."${name}"
+        FOR EACH ROW EXECUTE FUNCTION intrabase_system.notify_realtime();
+      `).catch(() => {
+        // Non-fatal — table was created, trigger just won't fire
+        console.warn('Realtime trigger could not be attached to', name)
+      })
       onCreated(name)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Failed to create table')
